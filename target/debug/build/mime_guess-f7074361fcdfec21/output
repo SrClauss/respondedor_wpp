@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/home/claus/src/respondedor_wpp/target/debug/build/mime_guess-f7074361fcdfec21/out/mime_types_generated.rs
