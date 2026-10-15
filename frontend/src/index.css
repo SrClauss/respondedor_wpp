@@ -346,3 +346,152 @@ header {
   border-top: 1px solid var(--border);
   gap: 0.5rem;
 }
+
+/* Toast Notification */
+.toast-notification {
+  position: fixed;
+  top: 1.5rem;
+  right: 1.5rem;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  animation: slideInToast 0.3s ease;
+  max-width: 500px;
+}
+.toast-success {
+  background: rgba(16, 185, 129, 0.95);
+  color: #fff;
+  border: 1px solid #059669;
+}
+.toast-error {
+  background: rgba(239, 68, 68, 0.95);
+  color: #fff;
+  border: 1px solid #dc2626;
+}
+.toast-warning {
+  background: rgba(245, 158, 11, 0.95);
+  color: #111827;
+  border: 1px solid #d97706;
+}
+.toast-info {
+  background: rgba(56, 189, 248, 0.95);
+  color: #042f2e;
+  border: 1px solid #0284c7;
+}
+.toast-close {
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.8;
+  padding: 0 0.3rem;
+  line-height: 1;
+}
+.toast-close:hover {
+  opacity: 1;
+}
+@keyframes slideInToast {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Pills de Colunas da Planilha */
+.column-pills-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+.column-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  transition: all 0.2s;
+}
+.column-pill:hover {
+  border-color: var(--primary);
+  background: rgba(56, 189, 248, 0.15);
+}
+.pill-index {
+  background: var(--primary);
+  color: #0b0f19;
+  font-weight: 800;
+  font-size: 0.68rem;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pill-label {
+  font-weight: 600;
+  color: #f8fafc;
+}
+.pill-code {
+  background: rgba(0, 0, 0, 0.5);
+  color: #38bdf8;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.7rem;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+/* Botões dos Passos de Interação */
+.step-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+.step-btn {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f1f5f9;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.step-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+}
+.step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #64748b;
+}
+.step-btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+.step-btn-danger:hover {
+  background: #ef4444;
+  color: #fff;
+  border-color: #ef4444;
+}
+

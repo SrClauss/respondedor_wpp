@@ -38,12 +38,33 @@ pub enum AcaoConclusao {
     ProximoFluxoDaFila,
 }
 
+/// Ação final ao concluir um Fluxo Lateral
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AcaoConclusaoFluxoLateral {
+    /// Reinicia o fluxo principal a partir do passo 0 para o mesmo cliente
+    ReiniciarFluxoPrincipal,
+    /// Repete a tentativa no mesmo passo do fluxo principal
+    RepetirPassoAtual,
+    /// Encerra a sessão atual da linha e avança para a próxima linha da fila em lote
+    AvancarParaProximaLinha,
+}
+
+/// Fluxo Lateral (subfluxo de desvio completo com N interações)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FluxoLateral {
+    pub ativo: bool,
+    pub nome: Option<String>,
+    pub interacoes: Vec<Interacao>,
+    pub acao_conclusao: Option<AcaoConclusaoFluxoLateral>,
+}
+
 /// Representa uma Interação individual no fluxo de diálogo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interacao {
     pub ordem: usize,
     pub condicao_espera: CondicaoEspera,
     pub acao_cliente: AcaoCliente,
+    pub fluxo_lateral: Option<FluxoLateral>,
 }
 
 /// Modelo de Fluxo de Automação (conjunto ordenado de Interações)

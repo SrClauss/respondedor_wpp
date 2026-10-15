@@ -14,11 +14,61 @@ const WIZARD_OPCOES_ESPERA = [
   { value: 'arquivo', label: 'Receber um Documento/Arquivo' }
 ];
 
-const WIZARD_OPCOES_RESPOSTA = [
-  { value: 'enviar_texto', label: 'Enviar um Texto ou Conteúdo da Coluna' },
-  { value: 'finalizar_sucesso', label: 'Finalizar Fluxo com Sucesso' },
-  { value: 'finalizar_baixar', label: 'Finalizar e Baixar Arquivo' }
+export const isDynamicParam = (interacao) => {
+  if (!interacao) return false;
+  if (interacao.tipo_resposta === 'enviar_coluna') return true;
+  if (interacao.tipo_resposta === 'enviar_texto_fixo') return false;
+  if (interacao.tipo_resposta === 'baixar_e_continuar') return false;
+  if (interacao.tipo_resposta === 'finalizar_baixar' || interacao.tipo_resposta === 'finalizar_sucesso') return false;
+  
+  // Para tipo_resposta === 'enviar_texto' (retrocompatibilidade):
+  const val = (interacao.valor_resposta || '').trim();
+  if (!val) return false;
+  if (val.startsWith('{') && val.endsWith('}')) return true;
+  if (/^\d+$/.test(val)) return false;
+  if (val.includes('\n')) return false;
+  const fixos = ['sair', 'voltar', 'menu', 'sim', 'nao', 'não', 'ficar neste canal', 'financeiro', 'ola', 'oi'];
+  if (fixos.includes(val.toLowerCase())) return false;
+  const colunasTipicas = ['cpf', 'cnpj', 'telefone', 'celular', 'nome', 'matricula', 'numero', 'email'];
+  if (colunasTipicas.includes(val.toLowerCase())) return true;
+  if (val.includes(' ') || val.length > 25) return false;
+  return true;
+};
+
+const OPCOES_RESPOSTA = [
+  { value: 'enviar_texto_fixo', label: '💬 Enviar Texto Fixo (Menu / Opção Fixa)' },
+  { value: 'enviar_coluna', label: '📊 Enviar Dado da Planilha (Variável por Cliente)' },
+  { value: 'baixar_e_continuar', label: '📥 Baixar Arquivo e Continuar Fluxo' },
+  { value: 'finalizar_sucesso', label: '🏁 Finalizar Fluxo com Sucesso' },
+  { value: 'finalizar_baixar', label: '💾 Finalizar e Baixar Arquivo' }
 ];
+
+const WIZARD_OPCOES_RESPOSTA = [
+  { value: 'enviar_texto_fixo', label: '💬 Enviar Texto Fixo (Menu / Opção Fixa)' },
+  { value: 'enviar_coluna', label: '📊 Enviar Dado da Planilha (Variável por Cliente)' },
+  { value: 'baixar_e_continuar', label: '📥 Baixar Arquivo e Continuar Fluxo' },
+  { value: 'finalizar_sucesso', label: '🏁 Finalizar Fluxo com Sucesso' },
+  { value: 'finalizar_baixar', label: '💾 Finalizar e Baixar Arquivo' }
+];
+
+// Converte o nome técnico da coluna em rótulo legível (ex: passo_2_financeiro -> "Passo 2 · financeiro")
+export const rotuloColuna = (col) => {
+  if (col === 'mensagem_inicial') return 'Mensagem inicial';
+  if (col === 'telefone') return 'Telefone destino';
+  const m = /^passo_(\d+)_?(.*)$/.exec(col);
+  if (m) return m[2] ? `Passo ${m[1]} · ${m[2].replace(/_+/g, ' ').trim()}` : `Passo ${m[1]}`;
+  return col;
+};
+
+// Detecta sequências de passos "Qualquer mensagem" (risco de dessincronia com o robô do outro lado)
+export const contarPassosCegosSeguidos = (interacoes) => {
+  let max = 0, atual = 0;
+  (interacoes || []).forEach((i) => {
+    if (i.tipo_espera === 'qualquer_mensagem') { atual += 1; max = Math.max(max, atual); }
+    else atual = 0;
+  });
+  return max;
+};
 
 function App() {
   const [tab, setTab] = useState('fluxos');
@@ -43,14 +93,25 @@ function App() {
   const [wppStatus, setWppStatus] = useState('desconectado'); // desconectado, gerando, aguardando, conectado
   const [qrCodeData, setQrCodeData] = useState(null);
   
-  // CSV / XLSX Lote State
-  const [csvData, setCsvData] = useState(null);
-  const [csvFileName, setCsvFileName] = useState('');
+  // Toast notification state
+  const [toast, setToast] = useState(null); // { message: '', type: 'info' | 'success' | 'warning' | 'error' }
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+  };
 
-  const handleCSVUpload = (e) => {
+  React.useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  // CSV / XLSX Lote State por Fluxo (isolado para não vazar entre cards)
+  const [flowUploads, setFlowUploads] = useState({});
+  const [previewFlowId, setPreviewFlowId] = useState(null);
+
+  const handleCSVUpload = (fluxo, e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setCsvFileName(file.name);
     
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -64,7 +125,7 @@ function App() {
         const rawJsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
         
         if (!rawJsonData || rawJsonData.length === 0) {
-          alert("A planilha deve conter o cabeçalho e pelo menos uma linha de dados.");
+          showToast("A planilha deve conter o cabeçalho e pelo menos uma linha de dados.", "error");
           return;
         }
 
@@ -79,11 +140,40 @@ function App() {
           return cleanRow;
         });
 
-        setCsvData(data);
-        alert(`${data.length} destinatários carregados com sucesso do arquivo ${file.name}! Clique em 'Iniciar Fluxo em Lote'.`);
+        // Validação de colunas esperadas pelo fluxo
+        const colunasEsperadas = extractParams(fluxo.interacoes, fluxo.mensagem_inicial, fluxo.receptor);
+        const colunasPresentes = Object.keys(data[0] || {});
+        const presentesNorm = colunasPresentes.map(c => c.toLowerCase().trim());
+        
+        const faltando = colunasEsperadas.filter(colEsp => {
+          const norm = colEsp.toLowerCase().trim();
+          const m = /^passo_(\d+)/.exec(norm);
+          if (m) {
+            const prefix = `passo_${m[1]}`;
+            return !presentesNorm.some(p => p.startsWith(prefix));
+          }
+          return !presentesNorm.includes(norm);
+        });
+
+        setFlowUploads(prev => ({
+          ...prev,
+          [fluxo.id]: {
+            fileName: file.name,
+            rows: data,
+            colunasPresentes,
+            colunasFaltando: faltando,
+            valido: faltando.length === 0
+          }
+        }));
+
+        if (faltando.length > 0) {
+          showToast(`Planilha "${file.name}" carregada (${data.length} linhas), mas atenção: faltam colunas (${faltando.join(', ')})!`, "warning");
+        } else {
+          showToast(`Planilha "${file.name}" pronta! ${data.length} cliente(s) validados com sucesso.`, "success");
+        }
       } catch (err) {
         console.error("Erro ao ler arquivo XLSX/CSV:", err);
-        alert("Falha ao processar a planilha. Certifique-se de que é um arquivo .xlsx ou .csv válido.");
+        showToast("Falha ao processar a planilha. Certifique-se de que é um arquivo .xlsx ou .csv válido.", "error");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -91,20 +181,23 @@ function App() {
   };
 
   const iniciarExecucaoFluxoCSV = async (fluxo) => {
-    if (!csvData || csvData.length === 0) {
-      alert("Nenhum CSV carregado. Por favor, suba um lote CSV primeiro (botão 'Subir Lote').");
+    const upload = flowUploads[fluxo.id];
+    if (!upload || !upload.rows || upload.rows.length === 0) {
+      showToast("Por favor, suba a planilha correspondente a este fluxo antes de iniciar.", "error");
       return;
     }
     
-    if (!fluxo.receptor) {
-      alert("Este fluxo não possui um Receptor Fixo configurado. Edite o fluxo para adicionar um Receptor antes de usar em lote.");
+    if (!fluxo.receptor && !upload.colunasPresentes.some(c => c.toLowerCase() === 'telefone')) {
+      showToast("Este fluxo não possui Receptor Fixo nem coluna 'telefone' na planilha.", "error");
       return;
     }
 
-    const itensLote = csvData.map(row => {
+    const itensLote = upload.rows.map(row => {
       let params = {};
-      fluxo.parametros_exigidos.forEach(p => {
-        params[p] = row[p] || '';
+      Object.keys(row).forEach(k => {
+        const val = row[k] !== undefined && row[k] !== null ? String(row[k]).trim() : '';
+        params[k] = val;
+        params[k.toLowerCase().trim()] = val;
       });
       return params;
     });
@@ -115,22 +208,26 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fluxo_id: fluxo.id,
-          telefone: fluxo.receptor,
+          telefone: fluxo.receptor || (upload.rows[0] && (upload.rows[0].telefone || upload.rows[0].Telefone)) || '',
           itens: itensLote
         })
       });
       const data = await res.json();
       
       if (!res.ok || data.error) {
-        alert(`Erro ao enfileirar lote: ${data.error}`);
+        showToast(`Erro ao enfileirar lote: ${data.error}`, "error");
       } else {
-        alert(`Lote com ${data.total} cliente(s) enfileirado com sucesso! O primeiro cliente já foi iniciado e o fluxo avançará cliente por cliente conforme as respostas forem recebidas.`);
-        setCsvData(null);
-        setCsvFileName('');
+        showToast(`🚀 Lote com ${data.total} cliente(s) enfileirado com sucesso!`, "success");
+        setFlowUploads(prev => {
+          const next = { ...prev };
+          delete next[fluxo.id];
+          return next;
+        });
+        if (previewFlowId === fluxo.id) setPreviewFlowId(null);
       }
     } catch (err) {
       console.error("Erro na requisição de lote:", err);
-      alert("Falha na comunicação com o servidor ao enviar o lote.");
+      showToast("Falha na comunicação com o servidor ao enviar o lote.", "error");
     }
   };
 
@@ -140,11 +237,13 @@ function App() {
         const res = await fetch(`/api/fluxos/${id}`, { method: 'DELETE' });
         if (res.ok) {
           setFluxos(fluxos.filter(f => f.id !== id));
+          showToast("Fluxo excluído com sucesso.", "info");
         } else {
-          alert("Falha ao excluir fluxo.");
+          showToast("Falha ao excluir fluxo.", "error");
         }
       } catch (err) {
         console.error("Erro ao deletar fluxo", err);
+        showToast("Erro ao comunicar com o servidor para excluir fluxo.", "error");
       }
     }
   };
@@ -199,26 +298,40 @@ function App() {
     return () => clearInterval(interval);
   }, [tab]);
 
-  const extractParams = (interactions, msgInicial) => {
+  const extractParams = (interactions, msgInicial, receptor) => {
     const params = [];
     
-    // Sempre teremos uma mensagem inicial, então ela é a coluna 1
+    // Se o receptor não for fixo, a primeira coluna da planilha é o telefone do destinatário
+    if (!receptor || receptor === 'Não informado' || !receptor.trim()) {
+      params.push("telefone");
+    }
+
+    // Mensagem inicial ("Ola")
     params.push("mensagem_inicial");
 
-    // Para cada passo que for 'enviar_texto', usa o valor configurado ou gera nome dinâmico
-    interactions.forEach((i, idx) => {
-      if (i.tipo_resposta === 'enviar_texto') {
-        const val = i.valor_resposta.trim().replace(/[{}]/g, '');
-        const nomeColuna = val ? val : `resposta_passo_${idx + 1}`;
-        params.push(nomeColuna);
-      }
+    // Exatamente uma coluna para cada interação/passo do fluxo
+    (interactions || []).forEach((i, idx) => {
+      const passoNum = idx + 1;
+      const rawVal = (i.valor_resposta || '').trim().replace(/[{}]/g, '');
+      const slug = rawVal ? `_${rawVal.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 15)}` : '';
+      params.push(`passo_${passoNum}${slug}`);
     });
     
     return params;
   };
 
   const addInteracao = () => {
-    setInteracoes([...interacoes, { tipo_espera: 'qualquer_mensagem', valor_espera: '', tipo_resposta: 'enviar_texto', valor_resposta: '' }]);
+    const novoPasso = {
+      tipo_espera: 'qualquer_mensagem',
+      valor_espera: '',
+      tipo_resposta: 'enviar_texto_fixo',
+      valor_resposta: ''
+    };
+    setInteracoes((prev) => [...prev, novoPasso]);
+    setTimeout(() => {
+      const el = document.getElementById('fim-da-lista-interacoes');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }, 100);
   };
 
   const removeInteracao = (index) => {
@@ -227,15 +340,30 @@ function App() {
     setInteracoes(novas);
   };
 
+  const moveInteracao = (index, direction) => {
+    const destino = index + direction;
+    if (destino < 0 || destino >= interacoes.length) return;
+    const novas = [...interacoes];
+    [novas[index], novas[destino]] = [novas[destino], novas[index]];
+    setInteracoes(novas);
+  };
+
+  const duplicarInteracao = (index) => {
+    const novas = [...interacoes];
+    const clone = JSON.parse(JSON.stringify(novas[index]));
+    novas.splice(index + 1, 0, clone);
+    setInteracoes(novas);
+  };
+
   const updateInteracao = (index, field, value) => {
     const novas = [...interacoes];
     novas[index][field] = value;
     
     // Auto-clear values when switching types
-    if (field === 'tipo_espera' && value === 'qualquer_mensagem') {
+    if (field === 'tipo_espera' && (value === 'qualquer_mensagem' || value === 'arquivo')) {
       novas[index].valor_espera = '';
     }
-    if (field === 'tipo_resposta' && value !== 'enviar_texto') {
+    if (field === 'tipo_resposta' && value === 'finalizar_sucesso') {
       novas[index].valor_resposta = '';
     }
     
@@ -368,7 +496,7 @@ function App() {
       if (field === 'tipo_espera' && (value === 'qualquer_mensagem' || value === 'arquivo')) {
         novas[index].valor_espera = '';
       }
-      if (field === 'tipo_resposta' && value !== 'enviar_texto') {
+      if (field === 'tipo_resposta' && value !== 'enviar_texto' && value !== 'baixar_e_continuar') {
         novas[index].valor_resposta = '';
       }
       return { ...prev, interacoes: novas };
@@ -413,7 +541,13 @@ function App() {
 
   const descreverRespostaWizard = (i) => {
     switch (i.tipo_resposta) {
-      case 'enviar_texto': return `enviar o conteúdo da coluna "${i.valor_resposta || 'resposta'}"`;
+      case 'enviar_coluna': return `enviar o dado da coluna "${i.valor_resposta || 'cpf'}" da planilha`;
+      case 'enviar_texto_fixo': return `enviar o texto fixo "${i.valor_resposta || ''}"`;
+      case 'enviar_texto':
+        return isDynamicParam(i)
+          ? `enviar o dado da coluna "${i.valor_resposta || 'cpf'}" da planilha`
+          : `enviar o texto fixo "${i.valor_resposta || ''}"`;
+      case 'baixar_e_continuar': return i.valor_resposta ? `baixar arquivo e enviar "${i.valor_resposta}"` : 'baixar arquivo e continuar fluxo';
       case 'finalizar_sucesso': return 'finalizar o fluxo com sucesso';
       case 'finalizar_baixar': return 'finalizar e baixar o arquivo';
       default: return i.tipo_resposta;
@@ -422,8 +556,8 @@ function App() {
 
   const validarEtapaWizard = (passo) => {
     if (passo === 0) {
-      if (!wizardDados.nome.trim()) { alert('Informe o nome do fluxo antes de continuar.'); return false; }
-      if (!wizardDados.mensagemInicial.trim()) { alert('Informe a mensagem inicial antes de continuar.'); return false; }
+      if (!wizardDados.nome.trim()) { showToast('Informe o nome do fluxo antes de continuar.', 'warning'); return false; }
+      if (!wizardDados.mensagemInicial.trim()) { showToast('Informe a mensagem inicial antes de continuar.', 'warning'); return false; }
       return true;
     }
     if (passo === 1) {
@@ -431,16 +565,16 @@ function App() {
         const i = wizardDados.interacoes[idx];
         if (i.tipo_espera === 'multiplas_mensagens') {
           const n = parseInt(i.valor_espera, 10);
-          if (!i.valor_espera || isNaN(n) || n < 1) { alert(`Interação ${idx + 1}: informe a quantidade de mensagens a aguardar.`); return false; }
+          if (!i.valor_espera || isNaN(n) || n < 1) { showToast(`Interação ${idx + 1}: informe a quantidade de mensagens a aguardar.`, 'warning'); return false; }
         }
         if ((i.tipo_espera === 'texto_exato' || i.tipo_espera === 'regex') && !i.valor_espera.trim()) {
-          alert(`Interação ${idx + 1}: informe o valor de espera.`); return false;
+          showToast(`Interação ${idx + 1}: informe o valor de espera.`, 'warning'); return false;
         }
         if (i.tipo_espera === 'regex' && i.valor_espera.trim()) {
-          try { new RegExp(i.valor_espera); } catch (e) { alert(`Interação ${idx + 1}: regex inválida - ${e.message}`); return false; }
+          try { new RegExp(i.valor_espera); } catch (e) { showToast(`Interação ${idx + 1}: regex inválida - ${e.message}`, 'error'); return false; }
         }
-        if (i.tipo_resposta === 'enviar_texto' && !i.valor_resposta.trim()) {
-          alert(`Interação ${idx + 1}: informe a coluna da planilha que será enviada.`); return false;
+        if ((i.tipo_resposta === 'enviar_texto' || i.tipo_resposta === 'enviar_coluna' || i.tipo_resposta === 'enviar_texto_fixo') && !i.valor_resposta.trim()) {
+          showToast(`Interação ${idx + 1}: informe o texto ou coluna que será enviado.`, 'warning'); return false;
         }
       }
       const idxFinalizadorAntecipado = wizardDados.interacoes.findIndex((i, idx) =>
@@ -467,16 +601,17 @@ function App() {
     setNovaMensagemInicial(wizardDados.mensagemInicial.trim());
     setInteracoes(wizardDados.interacoes.map((i) => ({ ...i })));
     fecharWizard();
+    showToast("Estrutura do assistente aplicada ao editor! Clique em 'Salvar Fluxo' para confirmar.", "info");
   };
 
   const criarFluxo = async (e) => {
     e.preventDefault();
     if (!novoFluxoNome || !novaMensagemInicial) {
-      alert('Preencha o nome do fluxo e a mensagem inicial.');
+      showToast('Preencha o nome do fluxo e a mensagem inicial.', 'warning');
       return;
     }
     
-    const params = extractParams(interacoes, novaMensagemInicial);
+    const params = extractParams(interacoes, novaMensagemInicial, novoReceptor);
 
     const novo = {
       id: fluxoEmEdicaoId ? fluxoEmEdicaoId : `fluxo_${Date.now()}`,
@@ -496,39 +631,69 @@ function App() {
 
       if (fluxoEmEdicaoId) {
         setFluxos(fluxos.map(f => f.id === fluxoEmEdicaoId ? novo : f));
-        alert("Fluxo atualizado com sucesso!");
+        showToast("Fluxo atualizado com sucesso!", "success");
       } else {
         setFluxos([...fluxos, novo]);
-        alert("Novo fluxo criado com sucesso!");
+        showToast("Novo fluxo criado com sucesso!", "success");
       }
 
       cancelarEdicao();
     } catch (err) {
       console.error("Erro ao salvar fluxo", err);
-      alert("Erro ao salvar fluxo no banco de dados.");
+      showToast("Erro ao salvar fluxo no banco de dados.", "error");
     }
   };
 
   const baixarModeloExcel = (fluxo) => {
-    const colunas = [...fluxo.parametros_exigidos];
-    if (colunas.length === 0) colunas.push("mensagem_inicial");
-    
-    // Preenche a linha de exemplo. Na coluna mensagem_inicial, já vem preenchido com a mensagem configurada!
-    const exemploRow = {};
-    colunas.forEach(col => {
-      if (col === "mensagem_inicial") {
-        exemploRow[col] = fluxo.mensagem_inicial || "Mensagem Inicial";
+    const colunas = [];
+
+    if (!fluxo.receptor || fluxo.receptor === 'Não informado' || !fluxo.receptor.trim()) {
+      colunas.push("telefone");
+    }
+    colunas.push("mensagem_inicial");
+
+    (fluxo.interacoes || []).forEach((i, idx) => {
+      const passoNum = idx + 1;
+      const rawVal = (i.valor_resposta || '').trim().replace(/[{}]/g, '');
+      const slug = rawVal ? `_${rawVal.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 15)}` : '';
+      colunas.push(`passo_${passoNum}${slug}`);
+    });
+
+    const exemplo1 = {};
+    const exemplo2 = {};
+
+    colunas.forEach((col, idx) => {
+      if (col === "telefone") {
+        exemplo1[col] = "5531999998888";
+        exemplo2[col] = "5531988887777";
+      } else if (col === "mensagem_inicial") {
+        exemplo1[col] = fluxo.mensagem_inicial || "Ola";
+        exemplo2[col] = fluxo.mensagem_inicial || "Ola";
       } else {
-        exemploRow[col] = `Valor para ${col}`;
+        const interacaoIdx = idx - (colunas.includes("telefone") ? 2 : 1);
+        const inter = fluxo.interacoes && fluxo.interacoes[interacaoIdx];
+        const val = inter ? (inter.valor_resposta || '').trim() : '';
+        if (col.toLowerCase().includes("cpf")) {
+          exemplo1[col] = "123.456.789-00";
+          exemplo2[col] = "987.654.321-11";
+        } else if (col.toLowerCase().includes("cnpj")) {
+          exemplo1[col] = "12.345.678/0001-90";
+          exemplo2[col] = "98.765.432/0001-01";
+        } else {
+          exemplo1[col] = val || `Passo ${interacaoIdx + 1}`;
+          exemplo2[col] = val || `Passo ${interacaoIdx + 1}`;
+        }
       }
     });
 
-    const worksheet = XLSX.utils.json_to_sheet([exemploRow], { header: colunas });
+    const rows = [exemplo1, exemplo2];
+    const worksheet = XLSX.utils.json_to_sheet(rows, { header: colunas });
+    worksheet['!cols'] = colunas.map(() => ({ wch: 22 }));
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Modelo_Automacao");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Clientes");
     
-    // Baixa como .xlsx nativo do Excel
-    XLSX.writeFile(workbook, `modelo_planilha_${fluxo.id}.xlsx`);
+    const nomeSlug = fluxo.nome ? fluxo.nome.replace(/[^a-z0-9]/gi, '_').toLowerCase() : fluxo.id;
+    XLSX.writeFile(workbook, `modelo_planilha_${nomeSlug}.xlsx`);
   };
 
   const exportarFluxoJSON = (fluxo) => {
@@ -543,7 +708,7 @@ function App() {
 
   const exportarTodosFluxosJSON = () => {
     if (fluxos.length === 0) {
-      alert("Não há fluxos para exportar.");
+      showToast("Não há fluxos para exportar.", "warning");
       return;
     }
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(fluxos, null, 2));
@@ -553,6 +718,7 @@ function App() {
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+    showToast("Arquivo JSON gerado e baixado com sucesso!", "success");
   };
 
   const importarFluxosJSON = (e) => {
@@ -596,10 +762,10 @@ function App() {
         }
 
         setFluxos(novosFluxos);
-        alert(`Sucesso! ${importadosCount} fluxo(s) importado(s) e salvo(s) no sistema.`);
+        showToast(`Sucesso! ${importadosCount} fluxo(s) importado(s) e salvo(s) no sistema.`, "success");
       } catch (err) {
         console.error("Erro ao importar JSON de fluxos:", err);
-        alert("Falha ao importar. Verifique se o arquivo JSON está no formato correto.");
+        showToast("Falha ao importar. Verifique se o arquivo JSON está no formato correto.", "error");
       }
     };
 
@@ -629,6 +795,20 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Toast flutuante de feedback */}
+      {toast && (
+        <div className={`toast-notification toast-${toast.type || 'info'}`}>
+          <span>
+            {toast.type === 'success' && '✅ '}
+            {toast.type === 'error' && '❌ '}
+            {toast.type === 'warning' && '⚠️ '}
+            {toast.type === 'info' && 'ℹ️ '}
+            {toast.message}
+          </span>
+          <button onClick={() => setToast(null)} className="toast-close" title="Fechar">&times;</button>
+        </div>
+      )}
+
       <header>
         <div>
           <h1 className="logo-title">Orquestrador WPP</h1>
@@ -709,27 +889,93 @@ function App() {
                   />
                 </div>
 
-                <div style={{ marginTop: '1rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    <h3 style={{ color: 'var(--text-main)', fontSize: '1.1rem' }}>Regras de Interação Passo a Passo</h3>
+                <div style={{ marginTop: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                    <div>
+                      <h3 style={{ color: 'var(--text-main)', fontSize: '1.15rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        🪜 Sequência de Passos do Atendimento
+                      </h3>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.2rem 0 0 0' }}>
+                        Cada passo define o que o robô espera receber e qual ação tomará em seguida.
+                      </p>
+                    </div>
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <button type="button" onClick={abrirWizard} className="btn" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', background: 'rgba(139, 92, 246, 0.2)', border: '1px solid #8b5cf6', color: '#a78bfa' }} title="Abrir assistente passo a passo para montar as interações">
-                        🧙 Wizard (Assistente)
+                      <button type="button" onClick={abrirWizard} className="btn" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', background: 'rgba(139, 92, 246, 0.2)', border: '1px solid #8b5cf6', color: '#a78bfa' }} title="Abrir assistente guiado para montar o fluxo">
+                        🧙 Assistente Wizard
                       </button>
                       <button type="button" onClick={addInteracao} className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}>
-                        + Adicionar Passo
+                        ➕ Adicionar Passo
                       </button>
                     </div>
                   </div>
+
+                  {/* Alerta de Passos Cegos Consecutivos */}
+                  {contarPassosCegosSeguidos(interacoes) >= 3 && (
+                    <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.4)', borderRadius: '6px', padding: '0.75rem 1rem', marginBottom: '1rem', color: '#fcd34d', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>⚠️</span>
+                      <div>
+                        <strong>Atenção ao risco de dessincronização:</strong> Há {contarPassosCegosSeguidos(interacoes)} passos seguidos configurados como "Qualquer Mensagem". Se a outra ponta (ex: URA ou robô) enviar 2 mensagens seguidas (como boas-vindas ou propaganda), o robô responderá cedo demais. Recomenda-se usar <em>"Aguardar Múltiplas Mensagens"</em> ou <em>"Conter um Texto Específico"</em>.
+                      </div>
+                    </div>
+                  )}
                   
                   <div className="rules-container">
                     {interacoes.map((interacao, index) => (
                       <div className="rule-item" key={index} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                          <span style={{ fontWeight: 'bold', color: 'var(--primary)' }}>Passo {index + 1}</span>
-                          {interacoes.length > 1 && (
-                            <button type="button" onClick={() => removeInteracao(index)} className="btn btn-danger" style={{ padding: '0.2rem 0.5rem' }}>Remover</button>
-                          )}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', paddingBottom: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.08)', flexWrap: 'wrap', gap: '0.5rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: '#fff', background: 'var(--primary)', padding: '0.2rem 0.6rem', borderRadius: '4px' }}>
+                              Passo {index + 1}
+                            </span>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {interacao.tipo_resposta === 'enviar_coluna' || (interacao.tipo_resposta === 'enviar_texto' && isDynamicParam(interacao))
+                                ? '📊 Envia dado da planilha'
+                                : interacao.tipo_resposta === 'baixar_e_continuar'
+                                ? '📥 Baixa arquivo e continua'
+                                : interacao.tipo_resposta === 'finalizar_sucesso' || interacao.tipo_resposta === 'finalizar_baixar'
+                                ? '🏁 Encerramento do fluxo'
+                                : '💬 Envia texto padrão'}
+                            </span>
+                          </div>
+
+                          <div className="step-actions">
+                            <button 
+                              type="button" 
+                              onClick={() => moveInteracao(index, -1)} 
+                              disabled={index === 0}
+                              className="step-btn" 
+                              title="Mover este passo para cima na sequência"
+                            >
+                              ⬆️ Subir
+                            </button>
+                            <button 
+                              type="button" 
+                              onClick={() => moveInteracao(index, 1)} 
+                              disabled={index === interacoes.length - 1}
+                              className="step-btn" 
+                              title="Mover este passo para baixo na sequência"
+                            >
+                              ⬇️ Descer
+                            </button>
+                            <button 
+                              type="button" 
+                              onClick={() => duplicarInteracao(index)} 
+                              className="step-btn" 
+                              title="Duplicar este passo"
+                            >
+                              📋 Duplicar
+                            </button>
+                            {interacoes.length > 1 && (
+                              <button 
+                                type="button" 
+                                onClick={() => removeInteracao(index)} 
+                                className="step-btn step-btn-danger" 
+                                title="Excluir este passo do fluxo"
+                              >
+                                🗑️ Remover
+                              </button>
+                            )}
+                          </div>
                         </div>
                         
                         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
@@ -753,7 +999,7 @@ function App() {
                               <input 
                                 type={interacao.tipo_espera === 'multiplas_mensagens' ? 'number' : 'text'}
                                 min={interacao.tipo_espera === 'multiplas_mensagens' ? '2' : undefined}
-                                className="form-input"
+                                className="form-input" 
                                 placeholder={
                                   interacao.tipo_espera === 'texto_exato' ? 'Ex: Digite seu CPF' : 
                                   interacao.tipo_espera === 'regex' ? 'Ex: ^[0-9]{11}$' : 'Qtd de mensagens a esperar (ex: 3)'
@@ -771,24 +1017,70 @@ function App() {
                             <label className="form-label" style={{ color: '#cbd5e1' }}>2. Qual será a ação do robô?</label>
                             <select 
                               className="form-input" 
-                              value={interacao.tipo_resposta}
+                              value={
+                                interacao.tipo_resposta === 'enviar_texto'
+                                  ? (isDynamicParam(interacao) ? 'enviar_coluna' : 'enviar_texto_fixo')
+                                  : interacao.tipo_resposta
+                              }
                               onChange={(e) => updateInteracao(index, 'tipo_resposta', e.target.value)}
-                              style={{ marginBottom: interacao.tipo_resposta === 'enviar_texto' ? '0.4rem' : '0', color: 'var(--text-main)' }}
+                              style={{ marginBottom: '0.4rem', color: 'var(--text-main)' }}
                             >
-                              <option value="enviar_texto">Enviar um Texto ou Conteúdo da Coluna</option>
-                              <option value="finalizar_sucesso">Finalizar Fluxo com Sucesso</option>
-                              <option value="finalizar_baixar">Finalizar e Baixar Arquivo</option>
+                              <option value="enviar_texto_fixo">💬 Enviar Texto Padrão (Menu / Opção)</option>
+                              <option value="enviar_coluna">📊 Enviar Dado da Planilha (Variável por Cliente)</option>
+                              <option value="baixar_e_continuar">📥 Baixar Arquivo e Continuar Fluxo</option>
+                              <option value="finalizar_sucesso">🏁 Finalizar Fluxo com Sucesso</option>
+                              <option value="finalizar_baixar">💾 Finalizar e Baixar Arquivo</option>
                             </select>
                             
-                            {interacao.tipo_resposta === 'enviar_texto' && (
-                              <input 
-                                type="text"
-                                className="form-input"
-                                placeholder="Nome da coluna da planilha que contém o dado (Ex: cpf, cnpj, telefone)"
-                                value={interacao.valor_resposta}
-                                onChange={(e) => updateInteracao(index, 'valor_resposta', e.target.value)}
-                                required
-                              />
+                            {/* Input para Texto Padrão */}
+                            {(interacao.tipo_resposta === 'enviar_texto_fixo' || (interacao.tipo_resposta === 'enviar_texto' && !isDynamicParam(interacao))) && (
+                              <div>
+                                <input 
+                                  type="text" 
+                                  className="form-input" 
+                                  placeholder="Texto exato que o robô vai enviar (Ex: 1, Financeiro, Sim, Sair)"
+                                  value={interacao.valor_resposta}
+                                  onChange={(e) => updateInteracao(index, 'valor_resposta', e.target.value)}
+                                  required
+                                />
+                                <span style={{ fontSize: '0.75rem', color: '#93c5fd', display: 'block', marginTop: '0.3rem' }}>
+                                  📋 <strong>Planilha Excel:</strong> gera a coluna <code>{`passo_${index + 1}${interacao.valor_resposta ? '_' + interacao.valor_resposta.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 15) : ''}`}</code> pré-preenchida com este texto (pode ser customizada por cliente).
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Input para Coluna da Planilha */}
+                            {(interacao.tipo_resposta === 'enviar_coluna' || (interacao.tipo_resposta === 'enviar_texto' && isDynamicParam(interacao))) && (
+                              <div>
+                                <input 
+                                  type="text" 
+                                  className="form-input" 
+                                  style={{ border: '1px solid #10b981', background: 'rgba(16, 185, 129, 0.08)' }}
+                                  placeholder="Nome da coluna da planilha (Ex: cpf, cnpj, telefone)"
+                                  value={interacao.valor_resposta}
+                                  onChange={(e) => updateInteracao(index, 'valor_resposta', e.target.value)}
+                                  required
+                                />
+                                <span style={{ fontSize: '0.75rem', color: '#86efac', display: 'block', marginTop: '0.3rem', fontWeight: 'bold' }}>
+                                  📊 <strong>Dado Variável:</strong> gera a coluna <code>{`passo_${index + 1}${interacao.valor_resposta ? '_' + interacao.valor_resposta.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 15) : ''}`}</code> na planilha para preenchimento individual de cada lead.
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Input para Baixar e Continuar */}
+                            {interacao.tipo_resposta === 'baixar_e_continuar' && (
+                              <div>
+                                <input 
+                                  type="text" 
+                                  className="form-input" 
+                                  placeholder="Texto opcional a enviar após baixar (Ex: Sair)"
+                                  value={interacao.valor_resposta}
+                                  onChange={(e) => updateInteracao(index, 'valor_resposta', e.target.value)}
+                                />
+                                <span style={{ fontSize: '0.75rem', color: '#93c5fd', display: 'block', marginTop: '0.3rem' }}>
+                                  📥 Salva o arquivo na pasta de downloads e envia este texto (se preenchido).
+                                </span>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -912,11 +1204,54 @@ function App() {
                     ))}
                   </div>
 
+                  {/* Barra de Ação Inferior: Adicionar Novo Passo na parte de baixo */}
+                  <div style={{ 
+                    marginTop: '1.25rem', 
+                    padding: '1.25rem', 
+                    background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)', 
+                    borderRadius: '8px', 
+                    border: '2px dashed rgba(56, 189, 248, 0.35)',
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    flexWrap: 'wrap', 
+                    gap: '1rem' 
+                  }}>
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button 
+                        type="button" 
+                        onClick={addInteracao} 
+                        className="btn btn-primary" 
+                        style={{ padding: '0.8rem 1.6rem', fontSize: '1.05rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem', boxShadow: '0 4px 14px rgba(56, 189, 248, 0.4)' }}
+                        title="Adicionar um novo passo diretamente ao final do fluxo"
+                      >
+                        ➕ Adicionar Novo Passo Aqui
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={abrirWizard} 
+                        className="btn" 
+                        style={{ padding: '0.8rem 1.25rem', fontSize: '0.9rem', background: 'rgba(139, 92, 246, 0.25)', border: '1px solid #8b5cf6', color: '#c4b5fd', fontWeight: '600' }}
+                      >
+                        🧙 Abrir Wizard
+                      </button>
+                    </div>
+                    <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                      Total: <strong>{interacoes.length}</strong> passo(s) configurado(s)
+                    </span>
+                  </div>
+                  <div id="fim-da-lista-interacoes" />
+
                 </div>
 
-                <div style={{ marginTop: '2rem', textAlign: 'right' }}>
-                  <button type="submit" className="btn btn-success" style={{ padding: '1rem 2.5rem', fontSize: '1.1rem' }}>
-                    Salvar Fluxo
+                <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem', alignItems: 'center' }}>
+                  {fluxoEmEdicaoId && (
+                    <button type="button" onClick={cancelarEdicao} className="btn" style={{ padding: '0.9rem 1.8rem', background: 'rgba(255,255,255,0.1)', color: '#cbd5e1' }}>
+                      Cancelar Edição
+                    </button>
+                  )}
+                  <button type="submit" className="btn btn-success" style={{ padding: '0.9rem 2.5rem', fontSize: '1.1rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem', boxShadow: '0 4px 16px rgba(16, 185, 129, 0.4)' }}>
+                    💾 Salvar Fluxo
                   </button>
                 </div>
               </form>
@@ -940,112 +1275,229 @@ function App() {
               </div>
             </div>
             <div className="grid-cards">
-              {fluxos.map(fluxo => (
-                <div key={fluxo.id} className="flow-card" style={{ position: 'relative' }}>
-                  <div style={{ position: 'absolute', top: '1rem', right: '1rem', display: 'flex', gap: '0.5rem' }}>
-                    <button 
-                      onClick={() => exportarFluxoJSON(fluxo)}
-                      style={{ background: 'rgba(99, 102, 241, 0.2)', border: '1px solid #6366f1', color: '#818cf8', borderRadius: '4px', padding: '0.2rem 0.6rem', cursor: 'pointer', fontSize: '0.85rem' }}
-                      title="Exportar este fluxo em JSON"
-                    >
-                      💾 JSON
-                    </button>
-                    <button 
-                      onClick={() => carregarFluxoParaEdicao(fluxo)}
-                      style={{ background: 'rgba(56, 189, 248, 0.2)', border: '1px solid var(--primary)', color: 'var(--primary)', borderRadius: '4px', padding: '0.2rem 0.6rem', cursor: 'pointer', fontSize: '0.85rem' }}
-                      title="Editar Fluxo"
-                    >
-                      ✏️ Editar
-                    </button>
-                    <button 
-                      onClick={() => deletarFluxo(fluxo.id)}
-                      style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: '4px', padding: '0.2rem 0.6rem', cursor: 'pointer', fontSize: '0.85rem' }}
-                      title="Excluir Fluxo"
-                    >
-                      🗑️ Excluir
-                    </button>
-                  </div>
-                  <div className="flow-header">
-                    <h3 className="flow-title">{fluxo.nome}</h3>
-                    <span className="flow-badge">{fluxo.interacoes.length} passos</span>
-                  </div>
-                  <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-                    Receptor Fixo: <strong>{fluxo.receptor}</strong>
-                  </p>
-                  
-                  <div style={{ background: 'rgba(56, 189, 248, 0.1)', padding: '0.8rem', borderRadius: '6px', borderLeft: '3px solid var(--primary)', marginBottom: '1rem' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--primary)', display: 'block', marginBottom: '0.3rem', fontWeight: 'bold' }}>START: Mensagem Inicial</span>
-                    <span style={{ fontSize: '0.9rem' }}>"{fluxo.mensagem_inicial}"</span>
-                  </div>
-                  
-                  <div className="steps-list">
-                    {fluxo.interacoes.map((i, idx) => {
-                      let esperaTxt = '';
-                      if (i.tipo_espera === 'qualquer_mensagem') esperaTxt = 'Qualquer mensagem';
-                      else if (i.tipo_espera === 'multiplas_mensagens') esperaTxt = `Aguardar ${i.valor_espera || 'N'} mensagens`;
-                      else if (i.tipo_espera === 'texto_exato') esperaTxt = `Texto contendo "${i.valor_espera}"`;
-                      else if (i.tipo_espera === 'regex') esperaTxt = `Padrão "${i.valor_espera}"`;
-                      else if (i.tipo_espera === 'arquivo') esperaTxt = 'Receber Documento';
-
-                      let respTxt = '';
-                      if (i.tipo_resposta === 'enviar_texto') respTxt = `Enviar Dado de "${i.valor_resposta || 'Coluna'}"`;
-                      else if (i.tipo_resposta === 'finalizar_baixar') respTxt = 'Baixar doc e Finalizar';
-                      else respTxt = 'Finalizar com sucesso';
-                      
-                      return (
-                        <div key={idx} className="step-item">
-                          <strong>Passo {idx + 1}:</strong> Se <em>{esperaTxt}</em> &rarr; <strong>{respTxt}</strong>
+              {fluxos.map(fluxo => {
+                const upload = flowUploads[fluxo.id];
+                const colunas = extractParams(fluxo.interacoes, fluxo.mensagem_inicial, fluxo.receptor);
+                
+                return (
+                  <div key={fluxo.id} className="flow-card">
+                    {/* Header do Card */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                          <h3 className="flow-title" style={{ margin: 0, fontSize: '1.15rem' }}>{fluxo.nome}</h3>
+                          <span className="flow-badge">{fluxo.interacoes.length} passo(s)</span>
                         </div>
-                      );
-                    })}
-                  </div>
-
-                  <div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--success)' }}>
-                      <strong>Cabeçalhos da Planilha (.xlsx):</strong>
-                    </span>
-                    <span className="code-block">
-                      {fluxo.parametros_exigidos.length > 0 ? fluxo.parametros_exigidos.join(', ') : 'mensagem_inicial'}
-                    </span>
-                  </div>
-
-                  <div className="card-actions" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    <button 
-                      onClick={() => baixarModeloExcel(fluxo)}
-                      className="btn btn-primary"
-                      style={{ flex: 1, fontSize: '0.85rem', padding: '0.6rem' }}
-                    >
-                      📥 Baixar Modelo (.xlsx)
-                    </button>
-                    <label className="btn" style={{ flex: 1, background: csvData ? 'var(--success)' : '#6366f1', color: '#fff', fontSize: '0.85rem', padding: '0.6rem', textAlign: 'center', cursor: 'pointer', border: csvData ? '1px solid #22c55e' : 'none' }}>
-                      {csvFileName ? `📂 Planilha: ${csvFileName}` : '📤 Subir Planilha (.xlsx)'}
-                      <input type="file" accept=".csv, .xlsx" style={{ display: 'none' }} onChange={handleCSVUpload} />
-                    </label>
-
-                    {csvData && (
-                      <div style={{ flex: '1 1 100%', background: 'rgba(34, 197, 94, 0.1)', padding: '0.5rem', borderRadius: '4px', border: '1px solid rgba(34, 197, 94, 0.3)', fontSize: '0.85rem', color: '#86efac', textAlign: 'center' }}>
-                        ✅ <strong>Planilha Pronta para Processamento:</strong> {csvFileName} ({csvData.length} linhas de clientes)
+                        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0.25rem 0 0 0' }}>
+                          Receptor Fixo: <strong style={{ color: '#e2e8f0' }}>{fluxo.receptor || 'Não informado (usará coluna telefone)'}</strong>
+                        </p>
                       </div>
-                    )}
 
-                    <button 
-                      onClick={() => iniciarExecucaoFluxoCSV(fluxo)}
-                      disabled={!csvData || csvData.length === 0}
-                      className="btn btn-success"
-                      style={{ 
-                        flex: '1 1 100%', 
-                        fontSize: '0.85rem', 
-                        padding: '0.65rem', 
-                        marginTop: '0.2rem',
-                        opacity: (!csvData || csvData.length === 0) ? 0.4 : 1,
-                        cursor: (!csvData || csvData.length === 0) ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      🚀 Iniciar Fluxo em Lote {!csvData && '(Aguardando upload da planilha)'}
-                    </button>
+                      <div style={{ display: 'flex', gap: '0.35rem', flexShrink: 0 }}>
+                        <button 
+                          onClick={() => exportarFluxoJSON(fluxo)}
+                          style={{ background: 'rgba(99, 102, 241, 0.15)', border: '1px solid rgba(99, 102, 241, 0.4)', color: '#a5b4fc', borderRadius: '4px', padding: '0.25rem 0.5rem', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                          title="Exportar este fluxo em JSON"
+                        >
+                          💾 JSON
+                        </button>
+                        <button 
+                          onClick={() => carregarFluxoParaEdicao(fluxo)}
+                          style={{ background: 'rgba(56, 189, 248, 0.15)', border: '1px solid rgba(56, 189, 248, 0.4)', color: 'var(--primary)', borderRadius: '4px', padding: '0.25rem 0.5rem', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                          title="Editar este fluxo"
+                        >
+                          ✏️ Editar
+                        </button>
+                        <button 
+                          onClick={() => deletarFluxo(fluxo.id)}
+                          style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', color: '#fca5a5', borderRadius: '4px', padding: '0.25rem 0.5rem', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                          title="Excluir este fluxo"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {/* Mensagem Inicial (Gatilho) */}
+                    <div style={{ background: 'rgba(56, 189, 248, 0.08)', padding: '0.65rem 0.85rem', borderRadius: '6px', borderLeft: '3px solid var(--primary)', marginBottom: '0.75rem' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--primary)', display: 'block', marginBottom: '0.2rem', fontWeight: 'bold' }}>
+                        🏁 GATILHO INICIAL:
+                      </span>
+                      <span style={{ fontSize: '0.9rem', color: '#f1f5f9' }}>"{fluxo.mensagem_inicial}"</span>
+                    </div>
+                    
+                    {/* Sequência de Passos */}
+                    <div className="steps-list" style={{ margin: '0.5rem 0' }}>
+                      {fluxo.interacoes.map((i, idx) => {
+                        let esperaTxt = '';
+                        if (i.tipo_espera === 'qualquer_mensagem') esperaTxt = 'Qualquer mensagem';
+                        else if (i.tipo_espera === 'multiplas_mensagens') esperaTxt = `Aguardar ${i.valor_espera || 'N'} mensagens`;
+                        else if (i.tipo_espera === 'texto_exato') esperaTxt = `Texto contendo "${i.valor_espera}"`;
+                        else if (i.tipo_espera === 'regex') esperaTxt = `Padrão "${i.valor_espera}"`;
+                        else if (i.tipo_espera === 'arquivo') esperaTxt = 'Receber Documento';
+
+                        let respTxt = '';
+                        if (i.tipo_resposta === 'enviar_coluna' || (i.tipo_resposta === 'enviar_texto' && isDynamicParam(i))) {
+                          respTxt = `Dado da Planilha [${i.valor_resposta || 'cpf'}]`;
+                        } else if (i.tipo_resposta === 'enviar_texto_fixo' || i.tipo_resposta === 'enviar_texto') {
+                          respTxt = `Texto Padrão "${i.valor_resposta}"`;
+                        } else if (i.tipo_resposta === 'baixar_e_continuar') {
+                          respTxt = i.valor_resposta ? `Baixar doc e enviar "${i.valor_resposta}"` : 'Baixar doc e Continuar';
+                        } else if (i.tipo_resposta === 'finalizar_baixar') {
+                          respTxt = 'Baixar doc e Finalizar';
+                        } else {
+                          respTxt = 'Finalizar com sucesso';
+                        }
+                        
+                        return (
+                          <div key={idx} className="step-item">
+                            <strong style={{ color: 'var(--primary)' }}>Passo {idx + 1}:</strong> Se <em>{esperaTxt}</em> &rarr; <strong>{respTxt}</strong>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Colunas Exigidas em Pills */}
+                    <div style={{ marginTop: '0.85rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                        <span style={{ fontSize: '0.82rem', color: 'var(--success)', fontWeight: 'bold' }}>
+                          📊 Colunas da Planilha ({colunas.length}):
+                        </span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          (Início + 1 coluna por passo)
+                        </span>
+                      </div>
+                      <div className="column-pills-container">
+                        {colunas.map((col, idx) => (
+                          <div key={idx} className="column-pill" title={`Nome técnico da coluna no Excel: ${col}`}>
+                            <span className="pill-index">{idx + 1}</span>
+                            <span className="pill-label">{rotuloColuna(col)}</span>
+                            <span className="pill-code">{col}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Bloco de Upload e Prévia do Lote da Planilha */}
+                    <div style={{ marginTop: '0.9rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {upload && (
+                        <div style={{ background: upload.valido ? 'rgba(34, 197, 94, 0.08)' : 'rgba(239, 68, 68, 0.08)', padding: '0.7rem 0.9rem', borderRadius: '6px', border: upload.valido ? '1px solid rgba(34, 197, 94, 0.35)' : '1px solid rgba(239, 68, 68, 0.35)', fontSize: '0.85rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div>
+                              <span style={{ color: upload.valido ? '#86efac' : '#fca5a5', fontWeight: 'bold' }}>
+                                {upload.valido ? '✅ Planilha Pronta:' : '⚠️ Planilha Incompleta:'}
+                              </span>{' '}
+                              <strong style={{ color: '#fff' }}>{upload.fileName}</strong>{' '}
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>({upload.rows.length} cliente(s))</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.4rem' }}>
+                              <button
+                                type="button"
+                                onClick={() => setPreviewFlowId(previewFlowId === fluxo.id ? null : fluxo.id)}
+                                className="btn"
+                                style={{ padding: '0.25rem 0.55rem', fontSize: '0.75rem', background: 'rgba(255,255,255,0.1)', color: '#cbd5e1' }}
+                              >
+                                {previewFlowId === fluxo.id ? '✕ Fechar Prévia' : '👁️ Ver Prévia'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFlowUploads(prev => {
+                                    const next = { ...prev };
+                                    delete next[fluxo.id];
+                                    return next;
+                                  });
+                                  if (previewFlowId === fluxo.id) setPreviewFlowId(null);
+                                }}
+                                className="btn"
+                                style={{ padding: '0.25rem 0.55rem', fontSize: '0.75rem', background: 'rgba(239,68,68,0.2)', color: '#fca5a5' }}
+                                title="Remover planilha deste fluxo"
+                              >
+                                Remover
+                              </button>
+                            </div>
+                          </div>
+
+                          {upload.colunasFaltando.length > 0 && (
+                            <div style={{ marginTop: '0.4rem', color: '#f87171', fontSize: '0.78rem' }}>
+                              ⚠️ Faltam colunas exigidas pelo fluxo: <strong>{upload.colunasFaltando.join(', ')}</strong>. Baixe o modelo (.xlsx) deste fluxo e use-o como base.
+                            </div>
+                          )}
+
+                          {previewFlowId === fluxo.id && (
+                            <div style={{ marginTop: '0.6rem', overflowX: 'auto', background: 'rgba(0,0,0,0.5)', borderRadius: '4px', padding: '0.5rem', border: '1px solid var(--border)' }}>
+                              <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary)', marginBottom: '0.4rem' }}>
+                                👁️ Prévia das Primeiras Linhas da Planilha:
+                              </div>
+                              <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse', textAlign: 'left' }}>
+                                <thead>
+                                  <tr style={{ borderBottom: '1px solid var(--border)', color: '#38bdf8' }}>
+                                    <th style={{ padding: '0.35rem 0.5rem' }}>#</th>
+                                    {upload.colunasPresentes.map((c, i) => (
+                                      <th key={i} style={{ padding: '0.35rem 0.5rem', whiteSpace: 'nowrap' }}>{c}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {upload.rows.slice(0, 3).map((r, ri) => (
+                                    <tr key={ri} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                                      <td style={{ padding: '0.35rem 0.5rem', color: 'var(--text-muted)' }}>{ri + 1}</td>
+                                      {upload.colunasPresentes.map((c, ci) => (
+                                        <td key={ci} style={{ padding: '0.35rem 0.5rem', whiteSpace: 'nowrap', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', color: '#f1f5f9' }}>
+                                          {r[c] !== undefined && r[c] !== '' ? String(r[c]) : '-'}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {upload.rows.length > 3 && (
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.4rem', textAlign: 'center' }}>
+                                  ... e mais {upload.rows.length - 3} linha(s) de clientes prontas para processamento.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="card-actions" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                        <button 
+                          onClick={() => baixarModeloExcel(fluxo)}
+                          className="btn btn-primary"
+                          style={{ flex: '1 1 calc(50% - 0.25rem)', fontSize: '0.85rem', padding: '0.65rem', justifyContent: 'center' }}
+                          title="Baixar planilha padrão (.xlsx) já com todas as colunas corretas deste fluxo"
+                        >
+                          📥 Baixar Modelo (.xlsx)
+                        </button>
+
+                        <label className="btn" style={{ flex: '1 1 calc(50% - 0.25rem)', background: upload ? 'rgba(16, 185, 129, 0.18)' : '#6366f1', border: upload ? '1px solid #10b981' : '1px solid transparent', color: '#fff', fontSize: '0.85rem', padding: '0.65rem', textAlign: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+                          {upload ? `📂 Trocar Planilha` : '📤 Subir Planilha (.xlsx)'}
+                          <input type="file" accept=".csv, .xlsx" style={{ display: 'none' }} onChange={(e) => handleCSVUpload(fluxo, e)} />
+                        </label>
+
+                        <button 
+                          onClick={() => iniciarExecucaoFluxoCSV(fluxo)}
+                          disabled={!upload || upload.rows.length === 0}
+                          className="btn btn-success"
+                          style={{ 
+                            flex: '1 1 100%', 
+                            fontSize: '0.92rem', 
+                            padding: '0.75rem', 
+                            fontWeight: 'bold',
+                            justifyContent: 'center',
+                            opacity: (!upload || upload.rows.length === 0) ? 0.35 : 1,
+                            cursor: (!upload || upload.rows.length === 0) ? 'not-allowed' : 'pointer',
+                            boxShadow: (upload && upload.rows.length > 0) ? '0 4px 14px rgba(16, 185, 129, 0.4)' : 'none'
+                          }}
+                        >
+                          🚀 Iniciar Fluxo em Lote {!upload && '(Suba a planilha primeiro)'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               
               {fluxos.length === 0 && (
                 <p style={{ color: 'var(--text-muted)' }}>Nenhum fluxo configurado. Crie um acima!</p>
@@ -1336,19 +1788,48 @@ function App() {
                           <label className="form-label" style={{ color: '#cbd5e1' }}>2. Qual será a ação do robô?</label>
                           <select
                             className="form-input"
-                            value={interacao.tipo_resposta}
+                            value={
+                              interacao.tipo_resposta === 'enviar_texto'
+                                ? (isDynamicParam(interacao) ? 'enviar_coluna' : 'enviar_texto_fixo')
+                                : interacao.tipo_resposta
+                            }
                             onChange={(e) => atualizarWizardInteracao(index, 'tipo_resposta', e.target.value)}
-                            style={{ marginBottom: interacao.tipo_resposta === 'enviar_texto' ? '0.4rem' : '0', color: 'var(--text-main)' }}
+                            style={{ marginBottom: '0.4rem', color: 'var(--text-main)' }}
                           >
                             {WIZARD_OPCOES_RESPOSTA.map((op) => (
                               <option key={op.value} value={op.value}>{op.label}</option>
                             ))}
                           </select>
-                          {interacao.tipo_resposta === 'enviar_texto' && (
+                          
+                          {/* Input para Texto Fixo */}
+                          {(interacao.tipo_resposta === 'enviar_texto_fixo' || (interacao.tipo_resposta === 'enviar_texto' && !isDynamicParam(interacao))) && (
                             <input
                               type="text"
                               className="form-input"
+                              placeholder="Texto fixo que o robô vai enviar (Ex: 1, Financeiro, Sim, Sair)"
+                              value={interacao.valor_resposta}
+                              onChange={(e) => atualizarWizardInteracao(index, 'valor_resposta', e.target.value)}
+                            />
+                          )}
+
+                          {/* Input para Coluna da Planilha */}
+                          {(interacao.tipo_resposta === 'enviar_coluna' || (interacao.tipo_resposta === 'enviar_texto' && isDynamicParam(interacao))) && (
+                            <input
+                              type="text"
+                              className="form-input"
+                              style={{ border: '1px solid #10b981', background: 'rgba(16, 185, 129, 0.08)' }}
                               placeholder="Nome da coluna da planilha (Ex: cpf, cnpj, telefone)"
+                              value={interacao.valor_resposta}
+                              onChange={(e) => atualizarWizardInteracao(index, 'valor_resposta', e.target.value)}
+                            />
+                          )}
+
+                          {/* Input para Baixar e Continuar */}
+                          {interacao.tipo_resposta === 'baixar_e_continuar' && (
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="Texto opcional a enviar após baixar (Ex: Sair)"
                               value={interacao.valor_resposta}
                               onChange={(e) => atualizarWizardInteracao(index, 'valor_resposta', e.target.value)}
                             />

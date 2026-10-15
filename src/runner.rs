@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 /// Payload recebido do webhook do wpp_server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WppWebhookPayload {
-    pub event: String,
+    pub event: Option<String>,
     pub from: String,
-    pub to: String,
+    pub to: Option<String>,
     pub body: Option<String>,
     pub media_url: Option<String>,
 }

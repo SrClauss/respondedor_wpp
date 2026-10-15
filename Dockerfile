@@ -1,30 +1,14 @@
-# Multi-stage Dockerfile para Container Único 100% Local
-
-# Stage 1: Build do Frontend React
-FROM node:20-alpine AS frontend-builder
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
-
-# Stage 2: Build do Backend Rust
-FROM rust:1.75-slim AS backend-builder
-WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN cargo build --release
-
-# Stage Final: Container Único de Execução Local
+# Container Único de Execução Local do Orquestrador WPP
 FROM ubuntu:22.04
 
-# Instalar Node.js, Chromium e dependências de sistema para o wpp_server
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Instalar Node.js 20, Chromium e dependências para o wpp_server
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
     chromium-browser \
     ca-certificates \
-    supervisor \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt-get/lists/*
@@ -32,17 +16,25 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copiar os arquivos estáticos do React compilados
-COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+COPY frontend/dist ./frontend/dist
 
-# Copiar o binário Rust compilado
-COPY --from=backend-builder /app/target/release/respondedor_wpp ./respondedor_wpp
+# Copiar o binário Rust otimizado compilado
+COPY target/release/respondedor_wpp ./respondedor_wpp
 
-# Criar pasta para downloads de boletos/relatórios
-RUN mkdir -p /app/downloads
+# Copiar o servidor WhatsApp Node.js e instalar dependências
+COPY wpp_server ./wpp_server
+RUN cd /app/wpp_server && npm install --omit=dev
+
+# Copiar script de inicialização
+COPY start.sh ./start.sh
+RUN chmod +x ./start.sh
+
+# Criar pastas para persistência de dados, downloads e sessão
+RUN mkdir -p /app/data /app/downloads /app/wpp_server/wpp_session
 
 # Configurar variáveis de ambiente do Chromium para o wpp_server
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-EXPOSE 8080
+EXPOSE 8080 3001
 
-CMD ["./respondedor_wpp"]
+CMD ["./start.sh"]
