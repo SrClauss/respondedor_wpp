@@ -22,8 +22,24 @@ async fn main() {
         .init();
 
     // Inicializar banco de dados SQLite local
-    let _conn = db::init_db().expect("Falha ao inicializar o banco de dados SQLite local");
+    let conn = db::init_db().expect("Falha ao inicializar o banco de dados SQLite local");
     tracing::info!("Banco de dados SQLite inicializado com sucesso.");
+
+    // Semear fluxo padrão caso a base esteja vazia
+    let total_fluxos: i64 = conn.query_row("SELECT count(*) FROM fluxos", [], |r| r.get(0)).unwrap_or(0);
+    if total_fluxos == 0 {
+        if let Ok(conteudo) = std::fs::read_to_string("fluxo_unimed_bh_2via_boleto.json") {
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                let id = json_val.get("id").and_then(|v| v.as_str()).unwrap_or("fluxo_unimed_bh_segunda_via_boleto");
+                let nome = json_val.get("nome").and_then(|v| v.as_str()).unwrap_or("Unimed-BH - 2ª Via de Boleto");
+                let _ = conn.execute(
+                    "INSERT INTO fluxos (id, nome, json_conteudo) VALUES (?1, ?2, ?3)",
+                    params![id, nome, conteudo],
+                );
+                tracing::info!("Fluxo inicial semeado com sucesso: {}", nome);
+            }
+        }
+    }
 
     // Serviço para entregar os arquivos estáticos compilados do React (SPA Fallback)
     let serve_dir = ServeDir::new("frontend/dist")

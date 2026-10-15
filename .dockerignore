@@ -1,0 +1,16 @@
+node_modules
+target
+frontend/node_modules
+frontend/dist
+wpp_server/node_modules
+wpp_server/.wwebjs_cache
+wpp_server/wpp_session
+wpp_session
+data
+downloads
+.git
+images
+pacote_cliente
+pacote_cliente.*
+*.tar.gz
+*.zip

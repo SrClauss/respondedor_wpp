@@ -1,2 +1,27 @@
-# Artefatos de build do Rust
+# Rust
 /target
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# WPP Server
+wpp_server/node_modules/
+wpp_server/.wwebjs_cache/
+wpp_server/wpp_session/
+
+# Dados de execução local e sessão
+wpp_session/
+downloads/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+!data/.gitkeep
+
+# Pacotes e temporários
+pacote_cliente/
+pacote_cliente.*
+*.tar.gz
+*.zip
+*.log
+.DS_Store

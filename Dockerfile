@@ -1,4 +1,25 @@
-# Container Único de Execução Local do Orquestrador WPP
+# ==========================================
+# Estágio 1: Build do Frontend (React + Vite)
+# ==========================================
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# ==========================================
+# Estágio 2: Build do Backend Rust
+# ==========================================
+FROM rust:1.82-bookworm AS rust-builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src/ ./src/
+RUN cargo build --release
+
+# ==========================================
+# Estágio 3: Runtime Final
+# ==========================================
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -17,15 +38,16 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copiar os arquivos estáticos do React compilados
-COPY frontend/dist ./frontend/dist
+# Copiar arquivos estáticos gerados no stage frontend-builder
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Copiar o binário Rust otimizado compilado
-COPY target/release/respondedor_wpp ./respondedor_wpp
+# Copiar binário Rust gerado no stage rust-builder
+COPY --from=rust-builder /app/target/release/respondedor_wpp ./respondedor_wpp
 
-# Copiar o servidor WhatsApp Node.js e instalar dependências
-COPY wpp_server ./wpp_server
+# Copiar servidor Node WhatsApp e instalar dependências
+COPY wpp_server/package*.json ./wpp_server/
 RUN cd /app/wpp_server && npm install --omit=dev
+COPY wpp_server/ ./wpp_server/
 
 # Copiar script de inicialização
 COPY start.sh ./start.sh
@@ -40,4 +62,3 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 EXPOSE 8080 3001
 
 CMD ["./start.sh"]
-

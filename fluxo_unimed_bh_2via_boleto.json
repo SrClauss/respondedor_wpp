@@ -1,0 +1,65 @@
+{
+  "id": "fluxo_unimed_bh_segunda_via_boleto",
+  "nome": "Unimed-BH - 2ª Via de Boleto",
+  "receptor": "Não informado",
+  "mensagem_inicial": "ola",
+  "interacoes": [
+    {
+      "tipo_espera": "qualquer_mensagem",
+      "valor_espera": "",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "Ficar neste canal"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "CPF",
+      "tipo_resposta": "enviar_coluna",
+      "valor_resposta": "cpf"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "escolha um dos nossos serviços",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "Financeiro\n2ª via de boleto, informes de pagamento-IRPF, extrato de utilização"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "Sobre Financeiro",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "1"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "Sobre faturas e comprovantes",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "1"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "Em que posso te ajudar?",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "1"
+    },
+    {
+      "tipo_espera": "texto_exato",
+      "valor_espera": "Você tem 1 boleto(s) em aberto",
+      "tipo_resposta": "enviar_texto_fixo",
+      "valor_resposta": "1"
+    },
+    {
+      "tipo_espera": "arquivo",
+      "valor_espera": "",
+      "tipo_resposta": "baixar_e_continuar",
+      "valor_resposta": "SAIR"
+    },
+    {
+      "tipo_espera": "qualquer_mensagem",
+      "valor_espera": "",
+      "tipo_resposta": "finalizar_sucesso",
+      "valor_resposta": ""
+    }
+  ],
+  "parametros_exigidos": [
+    "cpf"
+  ]
+}

@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  respondedor_wpp:
+    image: respondedor_wpp:latest
+    build: .
+    container_name: respondedor_wpp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./wpp_session:/app/wpp_server/wpp_session
