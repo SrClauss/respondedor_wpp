@@ -5,6 +5,8 @@ mod runner;
 
 use axum::{
     extract::{Json, Path},
+    http::StatusCode,
+    response::IntoResponse,
     routing::{get, post, delete},
     Router,
 };
@@ -40,6 +42,9 @@ async fn main() {
         .route("/api/fila/exportar_resumo", get(exportar_resumo_lote))
         .route("/api/logs", get(obter_logs))
         .route("/api/logs/limpar", post(limpar_logs))
+        .route("/api/wpp/status", get(proxy_wpp_status))
+        .route("/api/wpp/connect", post(proxy_wpp_connect))
+        .route("/api/wpp/disconnect", post(proxy_wpp_disconnect))
         .nest_service("/downloads", ServeDir::new("downloads"))
         .fallback_service(serve_dir);
 
@@ -52,6 +57,42 @@ async fn main() {
 
 async fn health_check() -> &'static str {
     "OK"
+}
+
+async fn proxy_wpp_status() -> Result<impl IntoResponse, (StatusCode, String)> {
+    let client = reqwest::Client::new();
+    match client.get("http://127.0.0.1:3001/api/wpp/status").send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            let json = resp.text().await.unwrap_or_else(|_| "{}".to_string());
+            Ok((status, [(axum::http::header::CONTENT_TYPE, "application/json")], json))
+        }
+        Err(e) => Err((StatusCode::BAD_GATEWAY, format!("Erro ao contatar wpp_server: {}", e))),
+    }
+}
+
+async fn proxy_wpp_connect() -> Result<impl IntoResponse, (StatusCode, String)> {
+    let client = reqwest::Client::new();
+    match client.post("http://127.0.0.1:3001/api/wpp/connect").send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            let json = resp.text().await.unwrap_or_else(|_| "{}".to_string());
+            Ok((status, [(axum::http::header::CONTENT_TYPE, "application/json")], json))
+        }
+        Err(e) => Err((StatusCode::BAD_GATEWAY, format!("Erro ao contatar wpp_server: {}", e))),
+    }
+}
+
+async fn proxy_wpp_disconnect() -> Result<impl IntoResponse, (StatusCode, String)> {
+    let client = reqwest::Client::new();
+    match client.post("http://127.0.0.1:3001/api/wpp/disconnect").send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            let json = resp.text().await.unwrap_or_else(|_| "{}".to_string());
+            Ok((status, [(axum::http::header::CONTENT_TYPE, "application/json")], json))
+        }
+        Err(e) => Err((StatusCode::BAD_GATEWAY, format!("Erro ao contatar wpp_server: {}", e))),
+    }
 }
 
 fn compilar_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
