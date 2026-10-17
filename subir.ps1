@@ -13,7 +13,13 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# 2. Cria diretórios locais se não existirem
+# 2. Atualiza repositório local com a última versão se houver git
+if (Test-Path ".git") {
+    Write-Host "🔄 Atualizando repositório com a versão mais recente..." -ForegroundColor Cyan
+    git pull origin main
+}
+
+# 3. Cria diretórios locais se não existirem
 $folders = @("data", "downloads", "wpp_session")
 foreach ($folder in $folders) {
     if (-not (Test-Path $folder)) {
@@ -21,7 +27,7 @@ foreach ($folder in $folders) {
     }
 }
 
-# 3. Sobe containers com Docker Compose
+# 4. Sobe containers com Docker Compose
 Write-Host "🐳 Subindo containers via Docker Compose..." -ForegroundColor Green
 docker compose up -d --build
 
