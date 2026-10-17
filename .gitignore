@@ -1,5 +1,7 @@
 # Rust
 /target
+/src-tauri/target
+/src-tauri/binaries/
 
 # Frontend
 frontend/node_modules/

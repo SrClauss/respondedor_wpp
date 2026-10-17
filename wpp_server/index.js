@@ -26,13 +26,34 @@ const { execSync } = require('child_process');
 
 function matarProcessosChrome() {
     try {
-        execSync('pkill -9 -f chrome || true');
+        if (process.platform === 'win32') {
+            execSync('taskkill /F /IM chrome.exe /T 2>nul || true');
+        } else {
+            execSync('pkill -9 -f chrome || true');
+        }
     } catch (e) {}
+}
+
+function encontrarChromeWindows() {
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        return process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+    if (process.platform === 'win32') {
+        const caminhos = [
+            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+            path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
+        ];
+        for (const p of caminhos) {
+            if (fs.existsSync(p)) return p;
+        }
+    }
+    return undefined;
 }
 
 function limparLocks() {
     matarProcessosChrome();
-    const sessionDir = path.join(__dirname, 'wpp_session');
+    const sessionDir = process.env.WPP_SESSION_PATH || path.join(__dirname, 'wpp_session');
     try {
         if (fs.existsSync(sessionDir)) {
             const removeLock = (dir) => {
@@ -78,10 +99,13 @@ async function inicializarCliente(forcarLimparSessao = false) {
     wppStatus = 'gerando';
     qrCodeDataUrl = null;
 
+    const sessionBasePath = process.env.WPP_SESSION_PATH || './wpp_session';
+    const chromePath = encontrarChromeWindows();
+
     client = new Client({
-        authStrategy: new LocalAuth({ dataPath: './wpp_session' }),
+        authStrategy: new LocalAuth({ dataPath: sessionBasePath }),
         puppeteer: {
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+            executablePath: chromePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
