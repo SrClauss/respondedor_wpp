@@ -13,8 +13,8 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# 2. Atualiza repositório local com a última versão se houver git
-if (Test-Path ".git") {
+# 2. Atualiza repositório local com a última versão se houver git instalado
+if ((Test-Path ".git") -and (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "🔄 Atualizando repositório com a versão mais recente..." -ForegroundColor Cyan
     git pull origin main
 }
