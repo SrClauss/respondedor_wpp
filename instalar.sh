@@ -5,14 +5,43 @@ echo "========================================================"
 echo "🚀 INSTALADOR AUTOMÁTICO - ORQUESTRADOR WPP"
 echo "========================================================"
 
-# 1. Verifica pré-requisitos
+# 1. Função auxiliar para instalar pacotes com root ou sudo, em apt ou apk
+install_pkg() {
+    local pkg=$1
+    if command -v apk &> /dev/null; then
+        echo "📦 Instalando $pkg via apk..."
+        apk add --no-cache "$pkg" || apk add "$pkg" || true
+    elif command -v apt-get &> /dev/null; then
+        echo "📦 Instalando $pkg via apt..."
+        if [ "$(id -u)" -eq 0 ]; then
+            apt-get update && apt-get install -y "$pkg" || true
+        elif command -v sudo &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y "$pkg" || true
+        fi
+    fi
+}
+
 if ! command -v git &> /dev/null; then
-    echo "📦 Instalando git..."
-    sudo apt-get update && sudo apt-get install -y git || true
+    install_pkg "git"
 fi
 
 if ! command -v docker &> /dev/null; then
-    echo "❌ Docker não encontrado. Por favor, instale o Docker antes de continuar."
+    echo "📦 Docker não encontrado. Tentando instalar..."
+    if command -v apk &> /dev/null; then
+        apk add --no-cache docker docker-cli-compose || true
+        # Inicia dockerd se não estiver rodando
+        if ! pgrep -x "dockerd" > /dev/null; then
+            dockerd > /dev/null 2>&1 &
+            sleep 3
+        fi
+    else
+        install_pkg "docker.io"
+        install_pkg "docker-compose-v2"
+    fi
+fi
+
+if ! command -v docker &> /dev/null; then
+    echo "❌ Docker não pôde ser instalado automaticamente. Por favor, instale o Docker para continuar."
     exit 1
 fi
 
