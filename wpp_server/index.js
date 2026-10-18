@@ -104,21 +104,29 @@ async function inicializarCliente(forcarLimparSessao = false) {
 
     const sessionBasePath = process.env.WPP_SESSION_PATH || './wpp_session';
     const chromePath = encontrarChromeWindows();
+    console.log('[WPP] Navegador detectado:', chromePath || 'Nenhum (usando padrao puppeteer)');
+
+    const puppeteerConfig = {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions'
+        ]
+    };
+
+    if (chromePath) {
+        puppeteerConfig.executablePath = chromePath;
+    }
 
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: sessionBasePath }),
-        puppeteer: {
-            executablePath: chromePath,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
-        }
+        puppeteer: puppeteerConfig
     });
 
     client.on('qr', async (qr) => {
