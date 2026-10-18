@@ -1,12 +1,15 @@
 # ========================================================
-# 🛑 PARAR APLICAÇÃO - ORQUESTRADOR WPP (PowerShell)
+# 🛑 PARAR APLICAÇÃO - ORQUESTRADOR WPP
 # ========================================================
 
-Write-Host "🛑 Parando Orquestrador WPP..." -ForegroundColor Yellow
-docker compose down
+Write-Host "🛑 Encerrando processos do Orquestrador WPP..." -ForegroundColor Yellow
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✅ Aplicação parada com sucesso." -ForegroundColor Green
-} else {
-    Write-Host "❌ Falha ao parar os containers." -ForegroundColor Red
-}
+# 1. Encerra processos do Backend Rust
+Get-Process -Name "respondedor_wpp" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "cargo" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. Encerra processos do Node (WPP Server)
+Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+Write-Host "✔ Todos os serviços foram parados com sucesso." -ForegroundColor Green
+Start-Sleep -Seconds 2

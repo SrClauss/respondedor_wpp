@@ -4,4 +4,4 @@ title Orquestrador WPP - Parar
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0parar.ps1"
 
-timeout /t 3
+timeout /t 2 >nul
